@@ -16,11 +16,11 @@
 #
 
 import argparse
-import os
-
 import sys
+import re
+from typing import Iterable, List
 
-__VERSION__ = '1.0.0'
+__VERSION__ = '1.0.1'
 __VERSIONSTRING__ = f'pyRDAPI2DB Version {__VERSION__}'
 
 from libs.common.tools import GetConfigFile, ReadConfig
@@ -31,6 +31,7 @@ from libs.core.realdebritCore import realdebritCore
 def LoadConfig():
     configFile = GetConfigFile()
     return ReadConfig(configFile)
+
 
 def isValidConfig(config):
     if config is None:
@@ -64,6 +65,40 @@ def isValidConfig(config):
         return False
 
     return True
+
+
+def extract_domains_from_pattern(pattern):
+    domains = re.findall(r'([a-zA-Z0-9\-]+\\\.[a-zA-Z]{2,})', pattern)
+    return [d.replace(r'\.', '.') for d in domains]
+
+def normalize_api_patterns(api_patterns: Iterable[str]) -> List[str]:
+    normalized = []
+
+    for p in api_patterns:
+        if not p or not isinstance(p, str):
+            continue
+
+        if p.startswith("/") and p.endswith("/"):
+            p = p[1:-1]
+
+        p = p.replace("\\/", "/")
+        p = p.strip()
+
+        try:
+            re.compile(p)
+        except re.error:
+            continue
+
+        normalized.append(p)
+
+    return normalized
+
+def match_patterns(expressions, compiled):
+    return [
+        p
+        for p, rx in compiled
+        if any(rx.search(expr) for expr in expressions)
+    ]
 
 def main():
     parser = argparse.ArgumentParser(
@@ -107,6 +142,8 @@ def main():
         print('unable to get hosts regex')
         sys.exit()
 
+    hostsRegEx = normalize_api_patterns(hostsRegEx)
+
     up_hosts = {
         k: v
         for k, v in hostsStatus.items()
@@ -116,15 +153,65 @@ def main():
     if not up_hosts or len(up_hosts) == 0:
         sys.exit()
 
-    for key, value in up_hosts.items():
-        prefix = key.split(".", 1)[0]
+    for pattern in hostsRegEx:
+        domains = extract_domains_from_pattern(pattern)
 
-        value["regex"] = [
-            item for item in hostsRegEx
-            if prefix in item
+        for domain in domains:
+            if domain in up_hosts:
+                up_hosts[domain].setdefault("regex", []).append(pattern)
+
+    compiled = [(p, re.compile(p)) for p in hostsRegEx]
+
+    expDict = {
+        "docs.google.com": [
+            "http://docs.google.com/file/5/",
+            "http://docs.google.com/open/"
+        ],
+        "hitfile.net": [
+            "http://hitfile.net/0000000/"
+        ],
+        "katfile.com": [
+            "http://katfile.com/000000000000/"
+        ],
+        "mega.co.nz": [
+            "http://mega.co.nz/0/",
+            "http://mega.nz/0/"
+        ],
+        "rapidgator.net": [
+            "http://rapidgator.net/file/00000000000000000000000000000000/",
+            "http://rapidgator.net/file/0000000/"
+        ],
+        "send.cm": [
+            "http://send.cm/000000000000/",
+            "http://send.cm/d/000000000000/"
+        ],
+        "turbobit.net": [
+            "http://turbobit.net/download/free/0/",
+            "http://turbobit.net/000000000000.html/",
+            "http://turbobit.net/000000000000/0/",
+            "http://turbo.to/download/free/0/",
+            "http://turbo.to/000000000000.html/",
+            "http://turbobif.com/download/free/0/",
+            "http://turbobif.com/000000000000.html/",
+            "http://turb.to/download/free/0/",
+            "http://turb.to/000000000000.html/"
         ]
+    }
+
+    for key, value in up_hosts.items():
+        if value.get("regex"):
+            continue
+
+        print(key)
+        expressions = expDict.get(key)
+        if not expressions:
+            continue
+
+        value["regex"] = match_patterns(expressions, compiled)
 
     db.setrealdebritHosts(up_hosts)
+
+
 
 if __name__ == '__main__':
     main()
